@@ -1,4 +1,4 @@
-/* Linux-like doubly-linked list implementation */
+/* Linux-like circular doubly-linked list implementation */
 
 #pragma once
 
@@ -8,29 +8,35 @@ extern "C" {
 
 #include <stddef.h>
 
-/* "typeof" is a GNU extension.
+/**
+ * Feature detection for 'typeof':
+ * - Supported as a GNU extension in GCC/Clang.
+ * - Part of C23 standard (ISO/IEC 9899:2024).
+ *
  * Reference: https://gcc.gnu.org/onlinedocs/gcc/Typeof.html
  */
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__GNUC__) || defined(__clang__) ||         \
+    (defined(__STDC__) && defined(__STDC_VERSION__) && \
+     (__STDC_VERSION__ >= 202311L)) /* C23 ?*/
 #define __LIST_HAVE_TYPEOF 1
+#else
+#define __LIST_HAVE_TYPEOF 0
 #endif
 
 /**
- * struct list_head - Head and node of a doubly-linked list
- * @prev: pointer to the previous node in the list
- * @next: pointer to the next node in the list
+ * struct list_head - Node structure for a circular doubly-linked list
+ * @next: Pointer to the next node in the list.
+ * @prev: Pointer to the previous node in the list.
  *
- * The simple doubly-linked list consists of a head and nodes attached to
- * this head. Both node and head share the same struct type. The list_*
- * functions and macros can be used to access and modify this data structure.
+ * Defines both the head and nodes of a circular doubly-linked list. The head's
+ * @next points to the first node and @prev to the last node; in an empty list,
+ * both point to the head itself. All nodes, including the head, share this
+ * structure type.
  *
- * The @prev pointer of the list head points to the last list node of the
- * list and @next points to the first list node of the list. For an empty list,
- * both member variables point to the head.
- *
- * The list nodes are usually embedded in a container structure which holds the
- * actual data. Such container structure is called entry. The helper list_entry
- * can be used to calculate the structure address from the address of the node.
+ * Nodes are typically embedded within a container structure holding actual
+ * data, accessible via the list_entry() helper, which computes the container's
+ * address from a node pointer. The list_* functions and macros provide an API
+ * for manipulating this data structure efficiently.
  */
 struct list_head {
     struct list_head *prev;
@@ -46,11 +52,11 @@ struct list_head {
  * Return: @type pointer of structure containing ptr
  */
 #ifndef container_of
-#ifdef __LIST_HAVE_TYPEOF
-#define container_of(ptr, type, member)                            \
-    __extension__({                                                \
-        const __typeof__(((type *) 0)->member) *__pmember = (ptr); \
-        (type *) ((char *) __pmember - offsetof(type, member));    \
+#if __LIST_HAVE_TYPEOF
+#define container_of(ptr, type, member)                         \
+    __extension__({                                             \
+        const typeof(((type *) 0)->member) *__pmember = (ptr);  \
+        (type *) ((char *) __pmember - offsetof(type, member)); \
     })
 #else
 #define container_of(ptr, type, member) \
@@ -59,25 +65,23 @@ struct list_head {
 #endif
 
 /**
- * LIST_HEAD - Declare list head and initialize it
+ * LIST_HEAD - Define and initialize a circular list head
  * @head: name of the new list
  */
 #define LIST_HEAD(head) struct list_head head = {&(head), &(head)}
 
 /**
  * INIT_LIST_HEAD() - Initialize empty list head
- * @head: pointer to list head
+ * @head: Pointer to the list_head structure to initialize.
  *
- * This can also be used to initialize a unlinked list node.
+ * It sets both @next and @prev to point to the structure itself. The
+ * initialization applies to either a list head or an unlinked node that is
+ * not yet part of a list.
  *
- * A node is usually linked inside a list, will be added to a list in
- * the near future or the entry containing the node will be free'd soon.
- *
- * But an unlinked node may be given to a function which uses list_del(_init)
- * before it ends up in a previously mentioned state. The list_del(_init) on an
- * initialized node is well defined and safe. But the result of a
- * list_del(_init) on an uninitialized node is undefined (unrelated memory is
- * modified, crashes, ...).
+ * Unlinked nodes may be passed to functions using 'list_del()' or
+ * 'list_del_init()', which are safe only on initialized nodes. Applying these
+ * operations to an uninitialized node results in undefined behavior, such as
+ * memory corruption or crashes.
  */
 static inline void INIT_LIST_HEAD(struct list_head *head)
 {
@@ -86,9 +90,13 @@ static inline void INIT_LIST_HEAD(struct list_head *head)
 }
 
 /**
- * list_add() - Add a list node to the beginning of the list
- * @node: pointer to the new node
- * @head: pointer to the head of the list
+ * list_add - Insert a node at the beginning of a circular list
+ * @node: Pointer to the list_head structure to add.
+ * @head: Pointer to the list_head structure representing the list head.
+ *
+ * Adds the specified @node immediately after @head in a circular doubly-linked
+ * list, effectively placing it at the beginning. The existing first node, if
+ * any, shifts to follow @node, and the list's circular structure is maintained.
  */
 static inline void list_add(struct list_head *node, struct list_head *head)
 {
@@ -116,20 +124,22 @@ static inline void list_add_tail(struct list_head *node, struct list_head *head)
 }
 
 /**
- * list_del() - Remove a list node from the list
- * @node: pointer to the node
+ * list_del - Remove a node from a circular doubly-linked list
+ * @node: Pointer to the list_head structure to remove.
  *
- * The node is only removed from the list. Neither the memory of the removed
- * node nor the memory of the entry containing the node is free'd. The node
- * has to be handled like an uninitialized node. Accessing the next or prev
- * pointer of the node is not safe.
+ * Removes @node from its list by updating the adjacent nodes’ pointers to
+ * bypass it. The node’s memory and its containing structure, if any, are not
+ * freed. After removal, @node is left unlinked and should be treated as
+ * uninitialized; accessing its @next or @prev pointers is unsafe and may cause
+ * undefined behavior.
  *
- * Unlinked, initialized nodes are also uninitialized after list_del.
+ * Even previously initialized but unlinked nodes become uninitialized after
+ * this operation. To reintegrate @node into a list, it must be reinitialized
+ * (e.g., via INIT_LIST_HEAD).
  *
- * LIST_POISONING can be enabled during build-time to provoke an invalid memory
- * access when the memory behind the next/prev pointer is used after a list_del.
- * This only works on systems which prohibit access to the predefined memory
- * addresses.
+ * If LIST_POISONING is enabled at build time, @next and @prev are set to
+ * invalid addresses to trigger memory access faults on misuse. This feature is
+ * effective only on systems that restrict access to these specific addresses.
  */
 static inline void list_del(struct list_head *node)
 {
@@ -140,17 +150,19 @@ static inline void list_del(struct list_head *node)
     prev->next = next;
 
 #ifdef LIST_POISONING
-    node->prev = (struct list_head *) (0x00100100);
-    node->next = (struct list_head *) (0x00200200);
+    node->next = NULL;
+    node->prev = NULL;
 #endif
 }
 
 /**
- * list_del_init() - Remove a list node from the list and reinitialize it
- * @node: pointer to the node
+ * list_del_init - Remove a node and reinitialize it as unlinked
+ * @node: Pointer to the list_head structure to remove and reinitialize.
  *
- * The removed node will not end up in an uninitialized state like when using
- * list_del. Instead the node is initialized again to the unlinked state.
+ * Removes @node from its circular doubly-linked list using list_del() and then
+ * reinitializes it as an unlinked node via INIT_LIST_HEAD(). Unlike list_del(),
+ * which leaves the node uninitialized, this ensures @node is safely reset to an
+ * empty, standalone state with @next and @prev pointing to itself.
  */
 static inline void list_del_init(struct list_head *node)
 {
@@ -159,10 +171,14 @@ static inline void list_del_init(struct list_head *node)
 }
 
 /**
- * list_empty() - Check if list head has no nodes attached
- * @head: pointer to the head of the list
+ * list_empty - Test if a circular list has no nodes
+ * @head: Pointer to the list_head structure representing the list head.
  *
- * Return: 0 - list is not empty !0 - list is empty
+ * Checks whether the circular doubly-linked list headed by @head is empty.
+ * A list is empty if @head’s @next points to itself, indicating no nodes are
+ * attached.
+ *
+ * Returns: 0 if the list has nodes, non-zero if the list is empty.
  */
 static inline int list_empty(const struct list_head *head)
 {
@@ -173,7 +189,8 @@ static inline int list_empty(const struct list_head *head)
  * list_is_singular() - Check if list head has exactly one node attached
  * @head: pointer to the head of the list
  *
- * Return: 0 - list is not singular !0 -list has exactly one entry
+ * Returns: 0 if the list is not singular, non-zero if the list has exactly one
+ * entry.
  */
 static inline int list_is_singular(const struct list_head *head)
 {
@@ -379,54 +396,61 @@ static inline void list_move_tail(struct list_head *node,
     for (node = (head)->next; node != (head); node = node->next)
 
 /**
- * list_for_each_entry - Iterate over list entries
- * @entry: pointer used as iterator
- * @head: pointer to the head of the list
- * @member: name of the list_head member variable in struct type of @entry
+ * list_for_each_entry - Iterate over a list of entries
+ * @entry: Pointer to the structure type, used as the loop iterator.
+ * @head: Pointer to the list_head structure representing the list head.
+ * @member: Name of the list_head member within the structure type of @entry.
  *
- * The nodes and the head of the list must be kept unmodified while
- * iterating through it. Any modifications to the the list will cause undefined
- * behavior.
- *
- * FIXME: remove dependency of __typeof__ extension
+ * Iterates over a circular doubly-linked list, starting from the first node
+ * after @head until reaching @head again. The macro assumes the list structure
+ * remains unmodified during iteration; any changes (e.g., adding/removing
+ * nodes) may result in undefined behavior.
  */
-#ifdef __LIST_HAVE_TYPEOF
-#define list_for_each_entry(entry, head, member)                       \
-    for (entry = list_entry((head)->next, __typeof__(*entry), member); \
-         &entry->member != (head);                                     \
-         entry = list_entry(entry->member.next, __typeof__(*entry), member))
+#if __LIST_HAVE_TYPEOF
+#define list_for_each_entry(entry, head, member)                   \
+    for (entry = list_entry((head)->next, typeof(*entry), member); \
+         &entry->member != (head);                                 \
+         entry = list_entry(entry->member.next, typeof(*entry), member))
 #endif
 
 /**
- * list_for_each_safe - Iterate over list nodes and allow deletions
- * @node: list_head pointer used as iterator
- * @safe: list_head pointer used to store info for next entry in list
- * @head: pointer to the head of the list
+ * list_for_each_safe - Iterate over list nodes, allowing removal
+ * @node: Pointer to a list_head structure, used as the loop iterator.
+ * @safe: Pointer to a list_head structure, storing the next node for safe
+ *        iteration.
+ * @head: Pointer to the list_head structure representing the list head.
  *
- * The current node (iterator) is allowed to be removed from the list. Any
- * other modifications to the the list will cause undefined behavior.
+ * Iterates over a circular doubly-linked list, starting from the first node
+ * after @head and continuing until reaching @head again. This macro allows
+ * safe removal of the current node (@node) during iteration by pre-fetching
+ * the next node into @safe. Other modifications to the list structure (e.g.,
+ * adding nodes or altering @head) may result in undefined behavior.
  */
 #define list_for_each_safe(node, safe, head)                     \
     for (node = (head)->next, safe = node->next; node != (head); \
          node = safe, safe = node->next)
 
 /**
- * list_for_each_entry_safe - Iterate over list entries and allow deletes
- * @entry: pointer used as iterator
- * @safe: @type pointer used to store info for next entry in list
- * @head: pointer to the head of the list
- * @member: name of the list_head member variable in struct type of @entry
+ * list_for_each_entry_safe - Iterate over a list, allowing node removal
+ * @entry: Pointer to the structure type, used as the loop iterator.
+ * @safe: Pointer to the structure type, storing the next entry for safe
+ * iteration.
+ * @head: Pointer to the list_head structure representing the list head.
+ * @member: Name of the list_head member within the structure type of @entry.
  *
- * The current node (iterator) is allowed to be removed from the list. Any
- * other modifications to the the list will cause undefined behavior.
- *
- * FIXME: remove dependency of __typeof__ extension
+ * Iterates over a circular doubly-linked list, starting from the first node
+ * after @head and continuing until reaching @head again. This macro permits
+ * safe removal of the current node (@entry) during iteration by pre-fetching
+ * the next node into @safe. Other modifications to the list structure (e.g.,
+ * adding nodes or altering @head) may result in undefined behavior.
  */
-#define list_for_each_entry_safe(entry, safe, head, member)                \
-    for (entry = list_entry((head)->next, __typeof__(*entry), member),     \
-        safe = list_entry(entry->member.next, __typeof__(*entry), member); \
-         &entry->member != (head); entry = safe,                           \
-        safe = list_entry(safe->member.next, __typeof__(*entry), member))
+#if __LIST_HAVE_TYPEOF
+#define list_for_each_entry_safe(entry, safe, head, member)            \
+    for (entry = list_entry((head)->next, typeof(*entry), member),     \
+        safe = list_entry(entry->member.next, typeof(*entry), member); \
+         &entry->member != (head); entry = safe,                       \
+        safe = list_entry(safe->member.next, typeof(*entry), member))
+#endif
 
 #undef __LIST_HAVE_TYPEOF
 
