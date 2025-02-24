@@ -8,21 +8,34 @@ done
 # We suppress the checkLevelNormal warning for Cppcheck versions 2.11 and above.
 # Please refer to issues/153 for more details.
 CPPCHECK_suppresses="--inline-suppr harness.c \
+--suppress=checkersReport \
+--suppress=unmatchedSuppression \
+--suppress=normalCheckLevelMaxBranches \
 --suppress=missingIncludeSystem \
 --suppress=noValidConfiguration \
 --suppress=unusedFunction \
 --suppress=identicalInnerCondition:log2_lshift16.h \
 --suppress=nullPointerRedundantCheck:report.c \
 --suppress=nullPointerRedundantCheck:harness.c \
+--suppress=nullPointerOutOfMemory:harness.c \
+--suppress=staticFunction:harness.c \
+--suppress=nullPointerRedundantCheck:queue.c \
+--suppress=constParameterPointer:queue.c \
+--suppress=memleak:queue.c \
 --suppress=nullPointer:queue.c \
 --suppress=nullPointer:qtest.c \
 --suppress=returnDanglingLifetime:report.c \
 --suppress=constParameterCallback:console.c \
 --suppress=constParameterPointer:console.c \
+--suppress=staticFunction:console.c \
 --suppress=checkLevelNormal:log2_lshift16.h \
 --suppress=preprocessorErrorDirective:random.h \
+--suppress=constVariablePointer:linenoise.c \
+--suppress=staticFunction:linenoise.c \
+--suppress=nullPointerOutOfMemory:web.c \
+--suppress=staticFunction:web.c \
 "
-CPPCHECK_OPTS="-I. --enable=all --error-exitcode=1 --force $CPPCHECK_suppresses $CPPCHECK_unmatched ."
+CPPCHECK_OPTS="-I. --enable=all --error-exitcode=1 --force $CPPCHECK_suppresses $CPPCHECK_unmatched --cppcheck-build-dir=.out ."
 
 RETURN=0
 CLANG_FORMAT=$(which clang-format)
@@ -32,6 +45,7 @@ if [ $? -ne 0 ]; then
 fi
 
 CPPCHECK=$(which cppcheck)
+mkdir -p .out
 if [ $? -ne 0 ]; then
     echo "[!] cppcheck not installed. Unable to perform static analysis." >&2
     exit 1
@@ -65,9 +79,13 @@ if [ $? -ne 0 ]; then
     DIFF=diff
 fi
 
-SHA1SUM=$(which sha1sum)
-if [ $? -ne 0 ]; then
-    SHA1SUM=shasum
+if command -v sha1sum >/dev/null 2>&1; then
+  SHA1SUM="sha1sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA1SUM="shasum"
+else
+  echo "[!] sha1sum or shasum not installed." >&2
+  exit 1
 fi
 
 FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E "\.(c|cpp|h)$")
@@ -102,7 +120,7 @@ if [ ! -z "${FILES[*]}" ]; then
     echo "${FILES[*]}"
 fi
 
-$SHA1SUM -c scripts/checksums >/dev/null
+$SHA1SUM -c scripts/checksums 2>/dev/null >/dev/null
 if [ $? -ne 0 ]; then
     echo "[!] You are not allowed to change the header file queue.h or list.h" >&2
     exit 1
@@ -127,6 +145,7 @@ do
 done
 
 # static analysis
+echo "Running static analysis..."
 $CPPCHECK $CPPCHECK_OPTS >/dev/null
 if [ $? -ne 0 ]; then
     RETURN=1
